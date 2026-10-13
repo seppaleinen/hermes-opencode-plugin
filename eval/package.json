@@ -1,0 +1,15 @@
+{
+  "name": "hermes-eval-repo",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Synthetic eval repo for the HERMES harness prototype (issue T2). Two dependent files, one seeded bug, test-backed ground truth.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "vitest": "^1.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
