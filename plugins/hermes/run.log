@@ -1,0 +1,10 @@
+[2026-10-13T17:33:25.468Z] === HERMES Prototype Run ===
+[2026-10-13T17:33:25.469Z] Config: {"evalRepo":"./eval","budget":{"B":1},"components":{"validator":{"file":"src/validator.ts","model":{"providerID":"litellm","id":"qwen2.5-coder-7b"}},"checkout":{"file":"src/checkout.ts","model":{"providerID":"litellm","id":"gemma-4-12b"}}},"harness":{"activation":{"model":{"providerID":"litellm","id":"qwen3.8-27b-gsq-rco"}},"diagnosis":{"model":{"providerID":"litellm","id":"qwen3.8-27b-gsq-rco"}}}}
+[2026-10-13T17:33:25.469Z] 
+--- Baseline: npm test ---
+[2026-10-13T17:33:25.471Z] Baseline exit code: -1
+[2026-10-13T17:33:25.471Z] Baseline test output:
+
+[2026-10-13T17:33:25.471Z] 
+--- Running HERMES harness ---
+[2026-10-13T17:33:25.472Z] FATAL: Error: ENOENT: no such file or directory, open './eval/src/checkout.ts'
