@@ -22,7 +22,7 @@ const CONFIG: Config = {
   // `raw.trim()` instead of the return expression, so a second round is
   // needed to move it. This is a model-dependent sufficiency result, not a
   // harness failure.
-  budget: { B: 2 },
+  budget: { B: 1 },
   // T6: exercise the across-round revision loop by making round 0
   // deliberately incomplete (controlled flag, see src/collaborate.ts).
   incompleteRound0: true,
