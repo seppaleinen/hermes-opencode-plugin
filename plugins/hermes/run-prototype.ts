@@ -2,8 +2,9 @@ import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Config, ModelRef, Evidence } from "./src/types.js";
-import { runHarness } from "./src/harness.js";
+import { runHarness, type HarnessLog } from "./src/harness.js";
 import { callLitellm } from "./src/litellm.js";
+import { modelsMatch } from "./src/truthfulness.js";
 
 const PLUGIN_DIR = resolve(import.meta.dirname);
 const REPO_ROOT = resolve(PLUGIN_DIR, "..", "..");
@@ -80,14 +81,81 @@ function extractExitCode(output: string): number {
   return match ? parseInt(match[1]) : -1;
 }
 
+// Keyed by bare model id so the declared-vs-actual comparison stays byte-
+// equivalent with verify-run-truthfulness.ts, which parses `MODEL CALL:
+// model=litellm/<id>` and counts by `<id>`. The display form below prefixes
+// the provider for readability.
+const modelCalls: Record<string, number> = {};
+const modelProvider: Record<string, string> = {};
+
 const generateFn = async (input: { prompt: string; model?: ModelRef }): Promise<{ text: string }> => {
   if (!input.model) throw new Error("model is required");
   const text = await callLitellm(input.prompt, input.model);
-  log(`MODEL CALL: model=${input.model.providerID}/${input.model.id} promptLen=${input.prompt.length} responseLen=${text.length}`);
+  const ref = `${input.model.providerID}/${input.model.id}`;
+  log(`MODEL CALL: model=${ref} promptLen=${input.prompt.length} responseLen=${text.length}`);
+  modelCalls[input.model.id] = (modelCalls[input.model.id] || 0) + 1;
+  modelProvider[input.model.id] = input.model.providerID;
   log(`  PROMPT:\n${input.prompt}`);
   log(`  RESPONSE:\n${text}`);
   return { text };
 };
+
+/**
+ * Build the deterministic `=== Model Call Summary ===` section.
+ *
+ * No timestamps inside this section — the text must be byte-identical for
+ * identical runs so it can serve as stable evidence. The declared-vs-actual
+ * comparison reuses `modelsMatch` from src/truthfulness.ts, the single source
+ * of truth shared with verify-run-truthfulness.ts (issue #9).
+ */
+function buildModelCallSummary(config: Config, calls: Record<string, number>, rounds: HarnessLog[]): string {
+  const declaredSet = new Set<string>();
+  for (const name of Object.keys(config.components)) {
+    const id = config.components[name]?.model?.id;
+    if (id) declaredSet.add(id);
+  }
+  for (const key of ["activation", "diagnosis"] as const) {
+    const id = config.harness[key]?.model?.id;
+    if (id) declaredSet.add(id);
+  }
+  const declaredIds = Array.from(declaredSet).sort();
+
+  const actualIds = Object.keys(calls).sort();
+  const totalCalls = Object.values(calls).reduce((a, b) => a + b, 0);
+
+  const truthfulness = modelsMatch(declaredIds, actualIds) ? "PASS" : "FAIL";
+  const heterogeneityClaimed = declaredIds.length > 1;
+  const heterogeneityExercised = actualIds.length > 1;
+  const heterogeneityOk = heterogeneityClaimed === heterogeneityExercised && modelsMatch(declaredIds, actualIds);
+
+  const lines: string[] = [];
+  lines.push("=== Model Call Summary ===");
+  lines.push(`Declared models: ${declaredIds.join(", ")} (${declaredIds.length} unique)`);
+  lines.push("Actual model calls:");
+  for (const id of actualIds) {
+    const provider = modelProvider[id] || "litellm";
+    lines.push(`  ${provider}/${id}: ${calls[id]}`);
+  }
+  lines.push(`  Total: ${totalCalls}`);
+  lines.push(
+    `Heterogeneity: claimed (${declaredIds.length} declared) ` +
+    `${heterogeneityExercised ? "==" : "!="} exercised (${actualIds.length} actual) — ` +
+    `${heterogeneityOk ? "PASS" : "FAIL"}`
+  );
+  lines.push(`Budget B=${config.budget.B}, incompleteRound0=${config.incompleteRound0 === true}`);
+  lines.push("Trajectory:");
+  for (let i = 0; i < rounds.length; i++) {
+    const r = rounds[i];
+    const verdict = r.diagnosis?.verdict ?? "unknown";
+    const replan = verdict === "fail" && i + 1 < rounds.length;
+    lines.push(
+      `  round ${i}: roundConstraintActive=${r._roundConstraintActive === true}, verdict=${verdict}` +
+      (replan ? " → replan" : "")
+    );
+  }
+  lines.push(`Truthfulness: ${truthfulness}`);
+  return lines.join("\n") + "\n";
+}
 
 async function main() {
   try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
@@ -169,6 +237,11 @@ async function main() {
   const postRevert = spawnSync("git", ["diff", "--stat", "eval/"], { cwd: REPO_ROOT, encoding: "utf-8" });
   log(`Post-revert git diff --stat eval/ (must be empty):\n${postRevert.stdout || "(no output — clean)"}`);
   if (postRevert.stderr) log(`Post-revert stderr: ${postRevert.stderr}`);
+
+  // Append the deterministic model-call summary after the full trajectory and
+  // final verdict. No timestamps inside this section — identical runs must
+  // produce identical summary text so it is stable evidence.
+  log(`\n${buildModelCallSummary(CONFIG, modelCalls, result.logs)}`);
 }
 
 main().catch(err => {
