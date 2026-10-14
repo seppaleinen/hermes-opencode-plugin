@@ -12,6 +12,21 @@ export interface Config {
     activation: { model: ModelRef };
     diagnosis: { model: ModelRef };
   };
+  /**
+   * T6 revision-exercise flag (default false).
+   *
+   * When true, round 0's on-disk artifact for `src/validator.ts` is
+   * deterministically constrained to be deliberately incomplete (the
+   * null-guard is kept but the lowercasing is stripped), so round 0
+   * executes → fails → DIAGNOSE FAIL → ACTIVATE replans → round 1
+   * completes the fix → EXECUTE passes → DIAGNOSE PASS at b=1.
+   *
+   * The model does real reasoning in both rounds; this flag only
+   * constrains round 0's on-disk artifact. It makes the revision
+   * trajectory reproducible on re-run — never rely on the model to
+   * spontaneously produce an incomplete fix.
+   */
+  incompleteRound0?: boolean;
 }
 
 export interface Plan {

@@ -11,6 +11,10 @@ type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<{ tex
 export interface HarnessLog {
   round: number;
   activation?: { model: ModelRef; result: Plan };
+  /** T6: the activation plan as received at the top of this round (verbatim). */
+  _activationPlan?: Plan;
+  /** T6: whether the controlled round-0 incomplete constraint was active. */
+  _roundConstraintActive?: boolean;
   primitives: Array<{
     component: string;
     model: ModelRef;
@@ -39,6 +43,21 @@ function extractExitCode(output: string): number {
  */
 function isEligibleComponent(component: string): boolean {
   return component.startsWith("src/") && component.endsWith(".ts");
+}
+
+/**
+ * Resolve the per-component model from config.
+ *
+ * config.components is keyed by bare component name ("validator", "checkout")
+ * while plan.activated_components[].component carries the repository path
+ * ("src/validator.ts"). Without this normalization the lookup always misses
+ * and silently falls back to the activation model — i.e. the declared
+ * per-component heterogeneity is never exercised. (T6 finding: all three
+ * prior runs logged freellmapi for every call despite the config.)
+ */
+function componentModel(config: Config, component: string): ModelRef {
+  const key = component.replace(/^src\//, "").replace(/\.ts$/, "");
+  return config.components[key]?.model || config.harness.activation.model;
 }
 
 export async function runHarness(
@@ -86,6 +105,10 @@ export async function runHarness(
 
     log.primitives = [];
 
+    // Log the activation plan for this round verbatim
+    log._activationPlan = plan;
+    log._roundConstraintActive = (config.incompleteRound0 === true && b === 0);
+
     // Sequential single-pass collaboration — only eligible source components
     for (const comp of plan.activated_components) {
       if (!isEligibleComponent(comp.component)) continue;
@@ -101,13 +124,15 @@ export async function runHarness(
         incomingMessages,
         dependencyContext,
         generateFn,
-        config.components[comp.component]?.model || config.harness.activation.model,
-        bus
+        componentModel(config, comp.component),
+        bus,
+        b,
+        config.incompleteRound0 === true
       );
 
       log.primitives.push({
         component: comp.component,
-        model: config.components[comp.component]?.model || config.harness.activation.model,
+        model: componentModel(config, comp.component),
         result,
       });
 

@@ -83,17 +83,30 @@ export interface DiagnosisResult {
  */
 export function gateOnTestEvidence(evidence: Evidence, exitCode: number): DiagnosisResult["gate"] {
   const combined = evidence.o_test + "\n" + evidence.o_shell;
-  const failMatch = combined.match(/(\d+)\s+failed/i);
-  const passMatch = combined.match(/(\d+)\s+passed/i);
-  const totalMatch = combined.match(/(\d+)\s+(?:tests|test)\s+?(\w+)/i);
+  // Prefer the vitest "Tests  N failed | M passed (T)" summary line, which
+  // gives exact test counts. This line is distinct from "Test Files  N passed"
+  // (which counts files, not tests) — anchoring on the "Tests" word and the
+  // `failed | passed (total)` shape avoids conflating the two.
+  let failingTests = 0;
+  let passedTests = 0;
+  let totalTests = 0;
 
-  const failingTests = failMatch ? parseInt(failMatch[1]) : 0;
-  const passedTests = passMatch ? parseInt(passMatch[1]) : 0;
+  const testsLine = combined.match(/Tests\s+(\d+)\s+failed\s*\|\s*(\d+)\s+passed\s*\((\d+)\)/i);
+  const passOnly = combined.match(/Tests\s+(\d+)\s+passed\s*\((\d+)\)/i);
+  const pipeSummary = combined.match(/(\d+)\s+failed\s*\|\s*(\d+)\s+passed\s*\|\s*(\d+)\s+tests/i);
 
-  let totalTests = passedTests + failingTests;
-  const vitestSummary = combined.match(/(\d+)\s+failed\|\s*(\d+)\s+passed\|\s*(\d+)\s+tests/i);
-  if (vitestSummary) {
-    totalTests = parseInt(vitestSummary[3]);
+  if (testsLine) {
+    failingTests = parseInt(testsLine[1], 10);
+    passedTests = parseInt(testsLine[2], 10);
+    totalTests = parseInt(testsLine[3], 10);
+  } else if (pipeSummary) {
+    failingTests = parseInt(pipeSummary[1], 10);
+    passedTests = parseInt(pipeSummary[2], 10);
+    totalTests = parseInt(pipeSummary[3], 10);
+  } else if (passOnly) {
+    passedTests = parseInt(passOnly[1], 10);
+    totalTests = parseInt(passOnly[2], 10);
+    failingTests = 0;
   }
 
   const gatePassed = exitCode === 0 && failingTests === 0;

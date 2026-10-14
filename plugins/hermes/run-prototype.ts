@@ -1,4 +1,4 @@
-import { writeFileSync, appendFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { Config, ModelRef, Evidence } from "./src/types.js";
@@ -8,11 +8,24 @@ import { callLitellm } from "./src/litellm.js";
 const PLUGIN_DIR = resolve(import.meta.dirname);
 const REPO_ROOT = resolve(PLUGIN_DIR, "..", "..");
 const EVAL_REPO = resolve(REPO_ROOT, "eval");
-const LOG_PATH = resolve(REPO_ROOT, "run.log");
+// T6: run logs live in docs/t6-run-logs/ with a run-start timestamp, so each
+// re-run for the determinism check produces its own named artifact.
+const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+const LOG_DIR = resolve(REPO_ROOT, "docs", "t6-run-logs");
+const LOG_PATH = resolve(LOG_DIR, `t6-run-${RUN_ID}.log`);
 
 const CONFIG: Config = {
   evalRepo: EVAL_REPO,
-  budget: { B: 1 },
+  // T6: B=2 to test whether the weaker per-component model (qwen2.5-coder-7b)
+  // needs a second revision round. With freellmapi as the validator, B=1
+  // suffices (prior runs). With qwen, round 1 places .toLowerCase() on
+  // `raw.trim()` instead of the return expression, so a second round is
+  // needed to move it. This is a model-dependent sufficiency result, not a
+  // harness failure.
+  budget: { B: 2 },
+  // T6: exercise the across-round revision loop by making round 0
+  // deliberately incomplete (controlled flag, see src/collaborate.ts).
+  incompleteRound0: true,
   components: {
     validator: { file: "src/validator.ts", model: { providerID: "litellm", id: "qwen2.5-coder-7b" } },
     checkout: { file: "src/checkout.ts", model: { providerID: "litellm", id: "gemma-4-12b" } }
@@ -77,6 +90,7 @@ const generateFn = async (input: { prompt: string; model?: ModelRef }): Promise<
 };
 
 async function main() {
+  try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
   try { writeFileSync(LOG_PATH, ""); } catch {}
 
   log("=== HERMES Prototype Run ===");
@@ -96,6 +110,42 @@ async function main() {
   log("\n--- Running HERMES harness ---");
   const result = await runHarness(CONFIG, generateFn, issue, baseline);
 
+  log("\n--- Per-Round Trajectory (plan + bus messages + primitives + gate) ---");
+  for (const l of result.logs) {
+    log(`\n##### ROUND ${l.round} #####`);
+    log(`roundConstraintActive=${l._roundConstraintActive}`);
+    if (l.activation) {
+      log(`ACTIVATE model=${l.activation.model.providerID}/${l.activation.model.id}`);
+      log(`ACTIVATE PLAN:\n${JSON.stringify(l.activation.result, null, 2)}`);
+    }
+    for (const p of l.primitives) {
+      log(`COLLABORATE component=${p.component} model=${p.model.providerID}/${p.model.id}`);
+      log(`  action=${p.result.action} summary=${p.result.summary}`);
+      log(`  changes=${JSON.stringify(p.result.changes)}`);
+      log(`  validation_notes=${JSON.stringify(p.result.validation_notes)}`);
+      log(`  messages=${JSON.stringify(p.result.messages)}`);
+    }
+    if (l.messages && l.messages.length > 0) {
+      log(`BUS MESSAGES (verbatim):`);
+      for (const m of l.messages) {
+        log(`  ${m.source} -> ${m.target} [${m.type}]: ${m.message} (required_action=${m.required_action})`);
+      }
+    } else {
+      log(`BUS MESSAGES: none`);
+    }
+    if (l.execution) {
+      log(`EXECUTE exitCode=${extractExitCode(l.execution.o_shell)}`);
+      log(`EXECUTE o_test:\n${l.execution.o_test}`);
+      if (l.execution.o_runtime) log(`EXECUTE o_runtime:\n${l.execution.o_runtime}`);
+    }
+    if (l.diagnosis) {
+      log(`DIAGNOSE verdict=${l.diagnosis.verdict} gate=${JSON.stringify(l.diagnosis.gate)}`);
+      if (l.diagnosis.modelVerdict) {
+        log(`DIAGNOSE modelVerdict:\n${JSON.stringify(l.diagnosis.modelVerdict, null, 2)}`);
+      }
+    }
+  }
+
   log("\n--- Final Result ---");
   log(`Success: ${result.success}`);
   if (result.finalDiagnosis) {
@@ -107,6 +157,18 @@ async function main() {
   const finalTest = runTest();
   log(`Final exit code: ${extractExitCode(finalTest.o_shell)}`);
   log(`Final test output:\n${finalTest.o_test}`);
+
+  // T6 constraint: the eval repo must be byte-identical to its committed
+  // (buggy) state after the run. The harness applied the fix during
+  // execution; revert it now so the committed state is restored.
+  log("\n--- Reverting eval repo to committed (buggy) state ---");
+  const revert = spawnSync("git", ["checkout", "eval/src/validator.ts", "eval/src/checkout.ts"], { cwd: REPO_ROOT, encoding: "utf-8" });
+  log(`Revert exit code: ${revert.status ?? -1}`);
+  if (revert.stderr) log(`Revert stderr: ${revert.stderr}`);
+
+  const postRevert = spawnSync("git", ["diff", "--stat", "eval/"], { cwd: REPO_ROOT, encoding: "utf-8" });
+  log(`Post-revert git diff --stat eval/ (must be empty):\n${postRevert.stdout || "(no output — clean)"}`);
+  if (postRevert.stderr) log(`Post-revert stderr: ${postRevert.stderr}`);
 }
 
 main().catch(err => {
