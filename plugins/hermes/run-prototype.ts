@@ -1,7 +1,7 @@
 import { writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { Config, ModelRef, Evidence } from "./src/types.js";
+import { Config, ModelRef, Evidence, GenerateResult } from "./src/types.js";
 import { runHarness, type HarnessLog } from "./src/harness.js";
 import { callLitellm } from "./src/litellm.js";
 import { modelsMatch } from "./src/truthfulness.js";
@@ -88,16 +88,19 @@ function extractExitCode(output: string): number {
 const modelCalls: Record<string, number> = {};
 const modelProvider: Record<string, string> = {};
 
-const generateFn = async (input: { prompt: string; model?: ModelRef }): Promise<{ text: string }> => {
+const generateFn = async (input: { prompt: string; model?: ModelRef }): Promise<GenerateResult> => {
   if (!input.model) throw new Error("model is required");
-  const text = await callLitellm(input.prompt, input.model);
+  const result = await callLitellm(input.prompt, input.model);
   const ref = `${input.model.providerID}/${input.model.id}`;
-  log(`MODEL CALL: model=${ref} promptLen=${input.prompt.length} responseLen=${text.length}`);
+  log(`MODEL CALL: model=${ref} promptLen=${input.prompt.length} responseLen=${result.text.length}`);
+  if (result.usage) {
+    log(`  TOKENS: input=${result.usage.input} output=${result.usage.output} total=${result.usage.total}`);
+  }
   modelCalls[input.model.id] = (modelCalls[input.model.id] || 0) + 1;
   modelProvider[input.model.id] = input.model.providerID;
   log(`  PROMPT:\n${input.prompt}`);
-  log(`  RESPONSE:\n${text}`);
-  return { text };
+  log(`  RESPONSE:\n${result.text}`);
+  return result;
 };
 
 /**
@@ -219,6 +222,16 @@ async function main() {
   if (result.finalDiagnosis) {
     log(`Final diagnosis verdict: ${result.finalDiagnosis.verdict}`);
     log(`Gate: ${JSON.stringify(result.finalDiagnosis.gate)}`);
+  }
+
+  // Token/cost summary (issue #19)
+  if (result.totalTokenUsage) {
+    log(`Total tokens: input=${result.totalTokenUsage.input} output=${result.totalTokenUsage.output} total=${result.totalTokenUsage.total}`);
+  }
+  if (result.estimatedCost) {
+    log(`Estimated cost: input=${result.estimatedCost.input.toFixed(6)} output=${result.estimatedCost.output.toFixed(6)} total=${result.estimatedCost.total.toFixed(6)} ${result.estimatedCost.currency}`);
+  } else if (result.totalTokenUsage) {
+    log(`Estimated cost: null (no pricing available)`);
   }
 
   log("\n--- Final npm test ---");

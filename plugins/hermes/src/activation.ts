@@ -1,10 +1,10 @@
-import { Plan, ModelRef } from "./types.js";
+import { Plan, ModelRef, RetainedModifications, GenerateResult } from "./types.js";
 import { extractJSON } from "./json.js";
 
-type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<{ text: string }>;
+type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<GenerateResult>;
 
 const ACTIVATION_PROMPT = `Role.
-You are the activation module in HERMES, a software engineering framework based on modular executable Dev-Primitives. Your responsibility is to transform a repository-level software issue into a concrete plan over task-relevant repository components.
+You are the activation module in HERMES, a software engineering framework based on modular executable Dev-Primitives. Your responsibility is to transform a repository-level software engineering issue into a concrete plan over task-relevant repository components.
 You do not directly modify repository files. Instead, you identify which Dev-Primitives should be activated, assign each activated primitive a localized objective, identify dependencies among them, and determine how the resulting changes should be validated.
 Inputs.
 You may receive:
@@ -13,6 +13,7 @@ You may receive:
 • Repository Context: task-relevant implementation and dependency information;
 • Previous Plan: the plan produced in the previous iteration, if revision is required;
 • Diagnosis Feedback: execution-grounded failure analysis from the previous iteration, if available.
+• Retained Modifications: previously successful modifications that should be preserved unless contradicted by new execution evidence (Paper B.5).
 Issue Analysis.
 Identify:
 • the expected behavior or requested functionality;
@@ -61,6 +62,18 @@ Initial Planning Output.{
   "rationale": "<brief explanation of component selection>"
 }`;
 
+function formatRetainedModifications(retained: RetainedModifications): string {
+  if (!retained || Object.keys(retained).length === 0) {
+    return "";
+  }
+  const lines = ["Retained Modifications (retain unless contradicted by new execution evidence):"];
+  for (const [filePath, mod] of Object.entries(retained)) {
+    lines.push(`- ${filePath} (round ${mod.round}): ${mod.reason}`);
+    lines.push(`  Content:\n\`\`\`\n${mod.content}\n\`\`\``);
+  }
+  return lines.join("\n");
+}
+
 export async function activate(
   issue: string,
   repoStructure: string,
@@ -68,8 +81,21 @@ export async function activate(
   previousPlan: Plan | null,
   diagnosisFeedback: string | null,
   generateFn: GenerateFn,
-  model: ModelRef
+  model: ModelRef,
+  retainedModifications?: RetainedModifications,
+  registeredArtifacts?: Set<string>
 ): Promise<Plan> {
+  const retainedSection = formatRetainedModifications(retainedModifications || {});
+
+  let registeredSection = "";
+  if (registeredArtifacts && registeredArtifacts.size > 0) {
+    const lines = ["Registered Artifacts (created in prior rounds, eligible for activation):"];
+    for (const file of registeredArtifacts) {
+      lines.push(`- ${file}`);
+    }
+    registeredSection = lines.join("\n");
+  }
+
   const prompt = `
 Issue: ${issue}
 
@@ -80,6 +106,8 @@ Repository Context:
 ${repoContext}
 ${previousPlan ? `\nPrevious Plan:\n${JSON.stringify(previousPlan, null, 2)}` : ""}
 ${diagnosisFeedback ? `\nDiagnosis Feedback:\n${diagnosisFeedback}` : ""}
+${retainedSection ? `\n${retainedSection}` : ""}
+${registeredSection ? `\n${registeredSection}` : ""}
 
 ${ACTIVATION_PROMPT}
 

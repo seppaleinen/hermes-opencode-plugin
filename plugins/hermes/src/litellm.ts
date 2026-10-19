@@ -1,4 +1,4 @@
-import { Config, ModelRef } from "./types.js";
+import { ModelRef, GenerateResult, TokenUsage } from "./types.js";
 
 const BASE_URL = process.env.LITELLM_BASE_URL || "https://litellm.labb.site/v1";
 const API_KEY = process.env.LITELLM_API_KEY || "";
@@ -18,7 +18,49 @@ const API_KEY = process.env.LITELLM_API_KEY || "";
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 2000;
 
-export async function callLitellm(prompt: string, model: ModelRef): Promise<string> {
+/**
+ * Token usage extracted from a LiteLLM API response.
+ *
+ * LiteLLM proxies OpenAI-compatible endpoints, so the response shape follows
+ * the OpenAI chat completion schema: `data.usage = { prompt_tokens,
+ * completion_tokens, total_tokens }`. When the proxy omits usage (some free
+ * tiers do), callers fall back to estimating from prompt/response string
+ * lengths. (issue #19)
+ */
+export function extractUsage(data: any): TokenUsage | undefined {
+  const u = data?.usage;
+  if (!u || typeof u !== "object") return undefined;
+
+  const promptTokens = Number(u.prompt_tokens);
+  const completionTokens = Number(u.completion_tokens);
+  const totalTokens = Number(u.total_tokens);
+
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(completionTokens)) {
+    return undefined;
+  }
+
+  return {
+    input: Math.max(0, Math.floor(promptTokens)),
+    output: Math.max(0, Math.floor(completionTokens)),
+    total: Number.isFinite(totalTokens) && totalTokens >= 0
+      ? Math.floor(totalTokens)
+      : Math.max(0, Math.floor(promptTokens)) + Math.max(0, Math.floor(completionTokens)),
+  };
+}
+
+/**
+ * Rough token estimate: ~4 chars per token (a common approximation for
+ * English text on GPT-style tokenizers). Used only when the API response
+ * omits `usage`. Callers can distinguish estimates from API-provided counts
+ * by checking whether the response included a `usage` object. (issue #19)
+ */
+export function estimateUsage(prompt: string, response: string): TokenUsage {
+  const input = Math.max(0, Math.ceil((prompt?.length || 0) / 4));
+  const output = Math.max(0, Math.ceil((response?.length || 0) / 4));
+  return { input, output, total: input + output };
+}
+
+export async function callLitellm(prompt: string, model: ModelRef): Promise<GenerateResult> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -46,7 +88,17 @@ export async function callLitellm(prompt: string, model: ModelRef): Promise<stri
       }
 
       const data = await res.json() as any;
-      return data.choices[0].message.content;
+      const text = data.choices[0].message.content;
+      const usage = extractUsage(data);
+
+      // When the proxy omits usage, estimate from string lengths. This is a
+      // rough approximation (1 token ≈ 4 chars) — callers should prefer the
+      // API-provided counts if available. (issue #19)
+      if (!usage) {
+        return { text, usage: estimateUsage(prompt, text) };
+      }
+
+      return { text, usage };
     } catch (e) {
       // Network errors (fetch failed) and our own transient 5xx land here.
       lastError = e;

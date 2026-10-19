@@ -1,9 +1,9 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { DevPrimitiveOutput, Message, ModelRef } from "./types.js";
+import { DevPrimitiveOutput, Message, ModelRef, GenerateResult } from "./types.js";
 import { MessageBus } from "./bus.js";
 import { extractJSON } from "./json.js";
 
-type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<{ text: string }>;
+type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<GenerateResult>;
 
 const DEV_PRIMITIVE_PROMPT = `Role.
 You are a Dev-Primitive in HERMES. You are responsible for one concrete repository component, such as a source file, configuration file, build file, or test file.
@@ -72,9 +72,17 @@ export async function collaborate(
   model: ModelRef,
   bus: MessageBus,
   round: number = 0,
-  incompleteRound0: boolean = false
+  incompleteRound0: boolean = false,
+  expectedAction: "inspect" | "modify" | "validate" = "modify"
 ): Promise<DevPrimitiveOutput> {
-  const artifact = await readFile(filePath, 'utf-8');
+  let artifact = '';
+  let isNewFile = false;
+  try {
+    artifact = await readFile(filePath, 'utf-8');
+  } catch (e) {
+    // File does not exist; treat as new file
+    isNewFile = true;
+  }
 
   const incomingMessagesText = messages.length > 0
     ? messages.map(m => `From ${m.source} to ${m.target}:\n${JSON.stringify(m, null, 2)}`).join('\n\n')
@@ -126,7 +134,9 @@ IMPORTANT: Output ONLY the JSON object. Do not wrap it in markdown code blocks, 
   try {
     const output: DevPrimitiveOutput = extractJSON(result.text);
 
-    if (output.action === "modify" && output.updated_artifact) {
+    const isInspect = expectedAction === "inspect";
+
+    if (!isInspect && output.action === "modify" && output.updated_artifact) {
       // T6: apply the round-0 incomplete constraint to the on-disk artifact
       // deterministically, so the trajectory is reproducible regardless of
       // whether the model followed the constraint text in its output.
@@ -145,6 +155,20 @@ IMPORTANT: Output ONLY the JSON object. Do not wrap it in markdown code blocks, 
         message: msg.message,
         required_action: "review"
       });
+    }
+
+    // Record if this component created a new file
+    if (isNewFile) {
+      output.createdArtifacts = [component];
+    }
+
+    if (isInspect) {
+      return {
+        ...output,
+        action: "no_change",
+        changes: [],
+        updated_artifact: artifact,
+      };
     }
 
     return output;

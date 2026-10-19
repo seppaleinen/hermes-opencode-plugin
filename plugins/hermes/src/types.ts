@@ -27,6 +27,41 @@ export interface Config {
    * spontaneously produce an incomplete fix.
    */
   incompleteRound0?: boolean;
+  /**
+   * Intra-round convergence flag (default off).
+   *
+   * When true, the collaboration phase re-runs components that receive new
+   * messages within the same round until no new messages are produced
+   * (capped by max passes per component). Default off preserves T6 baseline.
+   */
+  intraRoundConvergence?: boolean;
+  /**
+   * Parallel primitive execution flag (default off).
+   *
+   * When true, the collaboration phase schedules independent primitives
+   * concurrently based on the dependency DAG from plan.activated_components.
+   * When false (default), the harness uses the existing sequential single-pass
+   * path — byte-identical to prior behavior.
+   */
+  parallelPrimitives?: boolean;
+  /**
+   * Test-only seam to force component processing order without changing
+   * default behavior. Used for deterministic mechanics tests.
+   */
+  __testComponentOrderOverride?: string[];
+  /**
+   * Test-only max passes per component for convergence loop.
+   */
+  __testMaxPassesPerComponent?: number;
+  /**
+   * Per-model pricing for cost estimation (issue #19).
+   *
+   * Keyed by bare model id (e.g. "freellmapi"). Values are USD per million
+   * tokens. When a model has no entry, `estimatedCost` returns `null` for any
+   * aggregate that includes an unpriced call — "not available" is
+   * distinguishable from "free".
+   */
+  pricing?: Record<string, { input: number; output: number; currency?: string }>;
 }
 
 export interface Plan {
@@ -62,6 +97,7 @@ export interface DevPrimitiveOutput {
   updated_artifact: string;
   messages: Array<{ target: string; message: string }>;
   validation_notes: string[];
+  createdArtifacts?: string[];
 }
 
 export interface Evidence {
@@ -80,3 +116,66 @@ export interface DiagnosisOutput {
   missing_components?: string[];
   revision_guidance?: Array<{ component: string; action: string }>;
 }
+
+/**
+ * A modification that was successful in a prior round and should be
+ * retained unless contradicted by new execution evidence (Paper B.5).
+ */
+export interface RetainedModification {
+  /** Repository path of the modified file, e.g. "src/validator.ts" */
+  filePath: string;
+  /** The full artifact content that was successful */
+  content: string;
+  /** The round number in which this modification succeeded */
+  round: number;
+  /** Human-readable reason for retention (e.g., "passed tests, no regressions") */
+  reason: string;
+}
+
+/** Map of filePath -> RetainedModification */
+export type RetainedModifications = Record<string, RetainedModification>;
+
+/**
+ * Token usage for a single model call or an aggregate.
+ *
+ * Paper F.8 (Baseline Provenance) and Appendix I (Limitations) require token
+ * counts and inference costs to be accumulated over complete trajectories so
+ * that baseline runs are reproducible and comparable. (issue #19)
+ */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  total: number;
+}
+
+/**
+ * Estimated cost for a token aggregate, in USD.
+ *
+ * `null` when no model in the trajectory has a known per-token price (e.g. an
+ * unknown or free-tier model) — the caller should treat cost as "not
+ * available" rather than guessing zero.
+ */
+export interface TokenCostEstimate {
+  input: number;
+  output: number;
+  total: number;
+  currency: string;
+}
+
+export interface GenerateResult {
+  text: string;
+  usage?: TokenUsage;
+}
+
+/**
+ * The generate function signature matches OpenCode's `ctx.generate.text`:
+ * `GenerateTextOutput = { text: string }` (no usage field, see
+ * docs/opencode-plugin-sdk-reference.md §3a). Token usage is therefore
+ * estimated from prompt/response string lengths when the host does not
+ * expose it. (issue #19)
+ *
+ * Callers may return a `GenerateResult` with an optional `usage` field when
+ * the underlying provider exposes token counts; when absent, usage is
+ * estimated by the `TokenTracker` wrapper.
+ */
+export type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<GenerateResult>;

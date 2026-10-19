@@ -1,7 +1,7 @@
 import { Plugin } from "@opencode/plugin";
-import type { Config, ModelRef } from "./src/types.js";
+import type { Config, ModelRef, GenerateResult } from "./src/types.js";
 
-type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<{ text: string }>;
+type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<GenerateResult>;
 
 const DEFAULT_CONFIG: Config = {
   evalRepo: "./eval",
@@ -19,7 +19,8 @@ const DEFAULT_CONFIG: Config = {
   harness: {
     activation: { model: { providerID: "opencode", id: "ling-3.1-flash-free" } },
     diagnosis: { model: { providerID: "opencode", id: "ling-3.1-flash-free" } }
-  }
+  },
+  intraRoundConvergence: false
 };
 
 export default Plugin.define({
@@ -85,7 +86,7 @@ export default Plugin.define({
             { o_shell: "", o_test: "", o_runtime: "", o_trace: "" }
           );
           
-          return { 
+          return {
             content: JSON.stringify({
               success: result.success,
               cycle: input.cycle,
@@ -98,7 +99,7 @@ export default Plugin.define({
                   testOutput: l.execution.o_test
                 } : null
               }))
-            }, null, 2) 
+            }, null, 2)
           };
         }
       });

@@ -1,7 +1,7 @@
-import { DiagnosisOutput, Evidence, ModelRef, Plan } from "./types.js";
+import { DiagnosisOutput, Evidence, ModelRef, Plan, GenerateResult } from "./types.js";
 import { extractJSON } from "./json.js";
 
-type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<{ text: string }>;
+type GenerateFn = (input: { prompt: string; model?: ModelRef }) => Promise<GenerateResult>;
 
 const DIAGNOSIS_PROMPT = `Role.
 You are the diagnosis module in HERMES. Your responsibility is to evaluate the current repository state using execution evidence and determine whether the current repair satisfies the original software engineering task.
