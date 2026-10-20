@@ -1,0 +1,12 @@
+# Compiled bundles — built from plugin.ts via esbuild, not committed
+*.js
+*.mjs
+dist/
+
+# Build tooling — one-off scripts, not part of the plugin
+build.mjs
+compile-src.ts
+
+# Runtime
+*.log
+node_modules/
