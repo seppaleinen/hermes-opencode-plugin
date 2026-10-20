@@ -7,26 +7,49 @@ const DEFAULT_CONFIG: Config = {
   evalRepo: "./eval",
   budget: { B: 1 },
   components: {
-    validator: { 
-      file: "src/validator.ts", 
-      model: { providerID: "litellm", id: "qwen3-8b" } 
+    validator: {
+      file: "src/validator.ts",
+      model: { providerID: "litellm", id: "freellmapi" }
     },
-    checkout: { 
-      file: "src/checkout.ts", 
-      model: { providerID: "litellm", id: "llama-3.1-8b-instruct" } 
+    checkout: {
+      file: "src/checkout.ts",
+      model: { providerID: "litellm", id: "freellmapi" }
     }
   },
   harness: {
-    activation: { model: { providerID: "opencode", id: "ling-3.1-flash-free" } },
-    diagnosis: { model: { providerID: "opencode", id: "ling-3.1-flash-free" } }
+    activation: { model: { providerID: "litellm", id: "freellmapi" } },
+    diagnosis: { model: { providerID: "litellm", id: "freellmapi" } }
   },
   intraRoundConvergence: false
 };
 
+/**
+ * Deep-merge user options over DEFAULT_CONFIG. Plain-object values merge
+ * recursively so partial config (e.g. only `harness.diagnosis.model`) keeps
+ * the untouched defaults. Arrays and non-plain values replace wholesale.
+ * Fixes the crash when OpenCode passes an empty `{}` options object —
+ * `{}` is truthy, so a plain `||` fallback never fires. (issue #13 follow-up)
+ */
+function mergeConfig(user: unknown): Config {
+  const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  if (!isPlainObject(user)) return DEFAULT_CONFIG;
+  const out: Record<string, unknown> = { ...DEFAULT_CONFIG } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(user)) {
+    const base = out[key];
+    if (isPlainObject(value) && isPlainObject(base)) {
+      out[key] = { ...base, ...value };
+    } else {
+      out[key] = value;
+    }
+  }
+  return out as Config;
+}
+
 export default Plugin.define({
   id: "hermes",
   async setup(ctx) {
-    const config = ctx.options as Config || DEFAULT_CONFIG;
+    const config = mergeConfig(ctx.options);
 
     // Register activation as a tool
     await ctx.tool.transform((editor) => {
